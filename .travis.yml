@@ -1,0 +1,23 @@
+language: c
+
+os:
+ - linux
+
+compiler:
+ - clang
+ - gcc
+ - g++
+
+sudo: required
+dist: trusty
+
+addons:
+  apt:
+    packages:
+    - libjack-jackd2-dev
+    - libsndfile-dev
+    - libsoxr-dev
+    - libgtk-3-dev
+
+before_script:
+ - autoreconf -ivf
