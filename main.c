@@ -48,7 +48,6 @@ main(int argc, char *argv[])
 	int ret = 0;
 	int opt = 0;
 	double tmp = 0;
-	int args = 0;
 	struct recorder rcd = { 0 };
 	char filepath[PATH_MAX] = { 0 };
 	char *resolved_path = NULL;
@@ -65,7 +64,7 @@ main(int argc, char *argv[])
 	rcd.comp_level = 0.75;
 
 	/* Grab user arguments */
-	while ((opt = getopt(argc, argv, "p:m:t:s:g:r:f:q:c:")) != -1) {
+	while ((opt = getopt(argc, argv, "p:m:t:s:g:r:f:q:c:")) != -1)
 		switch (opt) {
 		case 'h':
 			usage(argv[0]);
@@ -168,10 +167,9 @@ main(int argc, char *argv[])
 			usage(argv[0]);
 			exit(-EINVAL);
 		}
-		args++;
-	}
 
-	if (argc > 1 && !args) {
+	/* Case user inputs non-option args only */
+	if (argc > 1 && optind == 1) {
 		usage(argv[0]);
 		exit(-EINVAL);
 	}
