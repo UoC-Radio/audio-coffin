@@ -33,7 +33,7 @@ usage(char *name)
 	printf("\nUsage: %s -h or [<parameter> <value>] pairs\n", name);
 	printf("\nParameters:\n"
 	       "\t-h\t\tShow this list\n"
-	       "\t-p   <string>\tSet output directory for storing files (default is current directory)\n"
+	       "\t-p   <string>\tSet output directory for storing files (default: ~/Recordings and ~/AudioLogs)\n"
 	       "\t-m   <int>\tSet operation mode, valid values are 1 for recorder (default) and 2 for logger'\n"
 	       "\t-t   <int>\tSet time interval in mins for log rotation (default is 1 hour, max is 24h), only valid for logger'\n"
 	       "\t-s   <boolean>\tEnable / disable stereo operation, valid values are 0 and 1 (default)\n"
