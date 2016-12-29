@@ -1,0 +1,19 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Audio Coffin
+Comment=An audio recorder/logger for jack that takes your secrets to the grave
+TryExec=acoffin
+Exec=acoffin -p ~/Recordings
+Icon=audio-coffin
+Actions=Recorder;Logger;
+Categories=AudioVideo;Audio;Recorder;GTK;
+MimeType=audio/x-vorbis+ogg;audio/x-flac
+
+[Desktop Action Recorder]
+Exec=acoffin -p ~/Recordings
+Name=Start Audio Coffin Recorder
+
+[Desktop Action Logger]
+Exec=acoffin -p ~/AudioLogs -m 2 -s 0 -r 32000 -q 0.2 -c 1
+Name=Start Audio Coffin Logger
