@@ -58,6 +58,7 @@ struct recorder {
 	uint32_t sample_rate;
 	/* Output buffer */
 	float *outbuff;
+	size_t outbuff_size;
 	/* Resampler */
 	SRC_STATE *resampler_state;
 	SRC_DATA resampler_data;

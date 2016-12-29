@@ -130,7 +130,7 @@ main(int argc, char *argv[])
 				ret = -EINVAL;
 				goto cleanup;
 			} else
-				rcd.headless = ret;
+				rcd.headless = ret == 0 ? 1 : 0;
 			break;
 		case 'r':
 			ret = atoi(optarg);
@@ -241,9 +241,14 @@ main(int argc, char *argv[])
 	if (!rcd.headless)
 		ret = gui_initialize(argc, argv, &rcd);
 	else {
-		ret = recorder_start(&rcd);
-		if (ret < 0)
-			goto cleanup;
+		/* Logger starts on recorder_initialize
+		 * with or without gui */
+		if(rcd.opmode != RECORDER_LOGGER) {
+			ret = recorder_start(&rcd);
+			if (ret < 0)
+				goto cleanup;
+		}
+
 		while (recorder_state)
 			sleep(1);
 	}

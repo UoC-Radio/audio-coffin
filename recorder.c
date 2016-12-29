@@ -312,7 +312,7 @@ recorder_consume(struct recorder *rcd)
 	 * exit of the consumer thread (without calling recorder_stop()
 	 * again), when switching states. */
 	if (recorder_state != RECORDER_RUNNING)
-		return 0;
+		goto cleanup;
 
 	/* Resample audio to the requested output sampling rate */
 	rcd->resampler_data.data_in = rcd->inbuff_copy;
@@ -332,8 +332,10 @@ recorder_consume(struct recorder *rcd)
 
 	/* Write data to file */
 	ret = sf_writef_float(rcd->out, rcd->outbuff, frames_generated);
-	if (ret != frames_generated)
+	if (ret != frames_generated) {
+		fprintf(stderr, "libsndfile failed writing to file %d !\n", ret);
 		ret = RECORDER_SNDFILE_ERR;
+	}
 
  cleanup:
 	pthread_mutex_unlock(&consumer_process_mutex);
@@ -705,7 +707,7 @@ recorder_initialize(struct recorder *rcd)
 	rcd->info.channels = num_channels;
 	switch (rcd->format) {
 	case RECORDER_FORMAT_FLAC:
-		rcd->info.format = SF_FORMAT_FLAC | SF_FORMAT_FLOAT;
+		rcd->info.format = SF_FORMAT_FLAC | SF_FORMAT_PCM_24;
 		break;
 	case RECORDER_FORMAT_OGG_VORBIS:
 		rcd->info.format = SF_FORMAT_OGG | SF_FORMAT_VORBIS;
@@ -749,7 +751,8 @@ recorder_initialize(struct recorder *rcd)
 	rcd->max_out_frames =
 	    ((int)(((double)rcd->sample_rate / (double)jack_samplerate) + 1.0))
 	    * num_channels * maxframes;
-	rcd->outbuff = malloc(rcd->max_out_frames * sizeof(float));
+	rcd->outbuff_size = rcd->max_out_frames * sizeof(float);
+	rcd->outbuff = malloc(rcd->outbuff_size);
 	if (rcd->outbuff == NULL) {
 		ret = RECORDER_NOMEM;
 		goto cleanup;
