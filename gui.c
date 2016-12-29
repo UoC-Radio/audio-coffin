@@ -208,7 +208,7 @@ gui_initialize(int argc, char *argv[], struct recorder *rcd)
 
 	/* Get application icon and create a pixbuf from it */
 	pixbuf_app_icon =
-	    gdk_pixbuf_new_from_file_at_scale("images/dracula.png", 96,
+	    gdk_pixbuf_new_from_file_at_scale(DATA_PATH"dracula.png", 96,
 					      96, TRUE, NULL);
 	if (!pixbuf_app_icon) {
 		ret = -1;
@@ -253,7 +253,7 @@ gui_initialize(int argc, char *argv[], struct recorder *rcd)
 	/* Create the image to put inside the record button and initialize the two
 	 * pixbufs for active and inactive states */
 	pixbuf_img_active =
-	    gdk_pixbuf_new_from_file_at_scale("images/record_active.png", 160,
+	    gdk_pixbuf_new_from_file_at_scale(DATA_PATH"record_active.png", 160,
 					      160, TRUE, NULL);
 	if (!pixbuf_img_active) {
 		ret = -4;
@@ -261,7 +261,7 @@ gui_initialize(int argc, char *argv[], struct recorder *rcd)
 	}
 	rcd->active_pbuf = pixbuf_img_active;
 	pixbuf_img_inactive =
-	    gdk_pixbuf_new_from_file_at_scale("images/record_inactive.png", 160,
+	    gdk_pixbuf_new_from_file_at_scale(DATA_PATH"record_inactive.png", 160,
 					      160, TRUE, NULL);
 	if (!pixbuf_img_inactive) {
 		ret = -5;
