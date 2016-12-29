@@ -23,6 +23,8 @@
 #include <stdio.h>		/* For printf/fprintf/perror */
 #include <stdlib.h>		/* For exit() */
 #include <errno.h>		/* For EINVAL */
+#include <sys/stat.h>		/* For stat() etc */
+#include <pwd.h>		/* For getpuid() etc */
 
 void
 usage(char *name)
@@ -51,6 +53,9 @@ main(int argc, char *argv[])
 	struct recorder rcd = { 0 };
 	char filepath[PATH_MAX] = { 0 };
 	char *resolved_path = NULL;
+	struct stat st = {0};
+	struct passwd *pw = NULL;
+	const char *homedir = NULL;
 
 	/* Set default values */
 	rcd.storage_path = ".";
@@ -78,16 +83,18 @@ main(int argc, char *argv[])
 					"Invalid or inaccessible path: %s\n",
 					optarg);
 				perror("realpath()");
-				exit(-EINVAL);
+				ret = -errno;
+				goto cleanup;
 			} else
-				rcd.storage_path = filepath;
+				rcd.storage_path = resolved_path;
 			break;
 		case 'm':
 			ret = atoi(optarg);
 			if (!(ret & 0x3)) {
 				fprintf(stderr, "Invalid operation mode: %s\n",
 					optarg);
-				exit(-EINVAL);
+				ret = -EINVAL;
+				goto cleanup;
 			} else
 				rcd.opmode =
 				    (ret ==
@@ -98,7 +105,8 @@ main(int argc, char *argv[])
 			if (ret > (24 * 60) || ret < 0) {
 				fprintf(stderr, "Invalid time interval: %s\n",
 					optarg);
-				exit(-EINVAL);
+				ret = -EINVAL;
+				goto cleanup;
 			} else
 				rcd.logrotate_interval_secs = ret * 60;
 			break;
@@ -108,7 +116,8 @@ main(int argc, char *argv[])
 				fprintf(stderr,
 					"Invalid value for stereo setting: %s\n",
 					optarg);
-				exit(-EINVAL);
+				ret = -EINVAL;
+				goto cleanup;
 			} else
 				rcd.stereo = ret;
 			break;
@@ -118,7 +127,8 @@ main(int argc, char *argv[])
 				fprintf(stderr,
 					"Invalid value for GUI setting: %s\n",
 					optarg);
-				exit(-EINVAL);
+				ret = -EINVAL;
+				goto cleanup;
 			} else
 				rcd.headless = ret;
 			break;
@@ -128,7 +138,8 @@ main(int argc, char *argv[])
 			if (ret < 0) {
 				fprintf(stderr, "Invalid sample rate: %s\n",
 					optarg);
-				exit(-EINVAL);
+				ret = -EINVAL;
+				goto cleanup;
 			} else
 				rcd.sample_rate = ret;
 			break;
@@ -136,7 +147,8 @@ main(int argc, char *argv[])
 			ret = atoi(optarg);
 			if (!(ret & 0x3)) {
 				fprintf(stderr, "Invalid format: %s\n", optarg);
-				exit(-EINVAL);
+				ret = -EINVAL;
+				goto cleanup;
 			} else
 				rcd.format =
 				    (ret ==
@@ -149,7 +161,8 @@ main(int argc, char *argv[])
 				fprintf(stderr,
 					"Invalid encoding quality: %s\n",
 					optarg);
-				exit(-EINVAL);
+				ret = -EINVAL;
+				goto cleanup;
 			} else
 				rcd.quality = tmp;
 			break;
@@ -159,19 +172,65 @@ main(int argc, char *argv[])
 				fprintf(stderr,
 					"Invalid compression level: %s\n",
 					optarg);
-				exit(-EINVAL);
+				ret = -EINVAL;
+				goto cleanup;
 			} else
 				rcd.comp_level = tmp;
 			break;
 		default:	/* '?' */
 			usage(argv[0]);
-			exit(-EINVAL);
+			ret = -EINVAL;
+			goto cleanup;
 		}
 
 	/* Case user inputs non-option args only */
 	if (argc > 1 && optind == 1) {
 		usage(argv[0]);
 		exit(-EINVAL);
+	}
+
+	/* Create default output directory if it doesn't exist
+	 * and if output directory is not set.
+	 * Use ~/Recordings for recordings and ~/AudioLogs
+	 * for audio logs */
+	if(!resolved_path) {
+		pw = getpwuid(getuid());
+		if(!pw) {
+			fprintf(stderr, "Unable to get home directory\n");
+			perror("getpuid()");
+			ret = -errno;
+			goto cleanup;
+		}
+		homedir = pw->pw_dir;
+		if (rcd.opmode == RECORDER_LOGGER)
+			snprintf(filepath, PATH_MAX, "%s/%s", homedir, "AudioLogs");
+		else
+			snprintf(filepath, PATH_MAX, "%s/%s", homedir, "Recordings");
+
+		/* Cleanup pwd structure asap as it contains user private infos */
+		memset(pw, 0, sizeof(pw));
+
+		if (stat(filepath, &st) == -1) {
+			ret = mkdir(filepath, 0700);
+			if (ret < 0) {
+				fprintf(stderr, "Unable to create output directory %s\n",
+					filepath);
+				perror("mkdir()");
+				ret = -errno;
+				goto cleanup;
+			}
+		}
+
+		resolved_path = realpath(filepath, resolved_path);
+		if (!resolved_path) {
+			fprintf(stderr,
+				"Invalid or inaccessible path: %s\n",
+				filepath);
+			perror("realpath()");
+			ret = -errno;
+			goto cleanup;
+		} else
+			rcd.storage_path = resolved_path;
 	}
 
 	/* Initialize the recorder */
@@ -192,5 +251,7 @@ main(int argc, char *argv[])
  cleanup:
 	if (recorder_state)
 		recorder_cleanup(&rcd);
+	if(resolved_path)
+		free(resolved_path);
 	return ret;
 }
