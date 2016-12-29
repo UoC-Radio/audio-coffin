@@ -18,6 +18,7 @@ test:
 # Install images
 install-data-local:
 	install -d -m 755 ${DESTDIR}@datarootdir@/audio-coffin
+	install -d -m 755 ${DESTDIR}@datarootdir@/pixmaps
 	install -c -m 644 @srcdir@/images/* ${DESTDIR}@datarootdir@/audio-coffin/
 	install -c -m 644 @srcdir@/images/dracula.png ${DESTDIR}@datarootdir@/pixmaps/audio-coffin.png
 	install -c -m 644 @srcdir@/audio-coffin.desktop ${DESTDIR}@datarootdir@/applications
