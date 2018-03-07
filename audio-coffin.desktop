@@ -15,5 +15,5 @@ Exec=acoffin
 Name=Start Audio Coffin Recorder
 
 [Desktop Action Logger]
-Exec=acoffin -m 2 -s 0 -r 32000 -q 0.2 -c 1
+Exec=acoffin -m 2 -s 0 -r 32000 -q 0.2 -c 1 -f 2
 Name=Start Audio Coffin Logger

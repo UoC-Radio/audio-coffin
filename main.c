@@ -38,8 +38,8 @@ usage(char *name)
 	       "\t-t   <int>\tSet time interval in mins for log rotation (default is 1 hour, max is 24h), only valid for logger'\n"
 	       "\t-s   <boolean>\tEnable / disable stereo operation, valid values are 0 and 1 (default)\n"
 	       "\t-g   <boolean>\tEnable / disable GUI, valid values are 0 and 1 (default)\n"
-	       "\t-r   <int>\tSet output sample rate, default value is 44100\n"
-	       "\t-f   <int>\tSet output format, valid values are 1 for FLAC and 2 for Ogg/Vorbis (default)\n"
+	       "\t-r   <int>\tSet output sample rate, default value is 48000\n"
+	       "\t-f   <int>\tSet output format, valid values are 1 for FLAC (default) and 2 for Ogg/Vorbis\n"
 	       "\t-q   <double>\tSet encoding quality for the vorbis/FLAC encoder, valid values are 0.0 - 1.0 (default: 0.5)\n"
 	       "\t-c   <double>\tSet compression level for the vorbis/FLAC encoder, valid values are 0.0 - 1.0 (default: 0.75)\n");
 }
@@ -63,8 +63,8 @@ main(int argc, char *argv[])
 	rcd.logrotate_interval_secs = 60 * 60;
 	rcd.stereo = 1;
 	rcd.headless = 0;
-	rcd.sample_rate = 44100;
-	rcd.format = RECORDER_FORMAT_OGG_VORBIS;
+	rcd.sample_rate = 48000;
+	rcd.format = RECORDER_FORMAT_FLAC;
 	rcd.quality = 0.5;
 	rcd.comp_level = 0.75;
 
