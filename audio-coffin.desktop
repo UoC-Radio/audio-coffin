@@ -11,7 +11,7 @@ Categories=AudioVideo;Audio;Recorder;GTK;
 MimeType=audio/x-vorbis+ogg;audio/x-flac
 
 [Desktop Action Recorder]
-Exec=acoffin
+Exec=acoffin -m 1 -q 1.0 -c 1 -f 2
 Name=Start Audio Coffin Recorder
 
 [Desktop Action Logger]
