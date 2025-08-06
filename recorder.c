@@ -26,16 +26,24 @@
 #include <time.h>		/* For clock_* functions */
 #include <signal.h>		/* For pthread_kill and signals */
 #include <errno.h>		/* For EINTR */
+#include <stdatomic.h>		/* For C11 atomics */
 
 pthread_mutex_t consumer_process_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t consumer_process_trigger = PTHREAD_COND_INITIALIZER;
-volatile sig_atomic_t recorder_state = RECORDER_NOT_INITIALIZED;
 static volatile sig_atomic_t consumer_active = 0;
 static volatile sig_atomic_t timer_active = 0;
 
 /*********\
 * HELPERS *
 \*********/
+
+static inline int recorder_get_state(struct recorder *rcd) {
+	return atomic_load_explicit(&rcd->state, memory_order_acquire);
+}
+
+static inline void recorder_set_state(struct recorder *rcd, int new_state) {
+	atomic_store_explicit(&rcd->state, new_state, memory_order_release);
+}
 
 /**
  * Initializes and opens a new file for writing
@@ -72,6 +80,7 @@ recorder_open_new_file(struct recorder *rcd)
 	ret = sf_command(out, SFC_SET_VBR_ENCODING_QUALITY,
 			 &rcd->quality, sizeof(double));
 	if (ret != SF_TRUE) {
+		fprintf(stderr, "libsndfile failed while setting VBR encoding quality\n");
 		ret = RECORDER_SNDFILE_ERR;
 		goto cleanup;
 	}
@@ -79,6 +88,7 @@ recorder_open_new_file(struct recorder *rcd)
 	ret = sf_command(out, SFC_SET_COMPRESSION_LEVEL,
 			 &rcd->comp_level, sizeof(double));
 	if (ret != SF_TRUE) {
+		fprintf(stderr, "libsndfile failed while setting compression level\n");
 		ret = RECORDER_SNDFILE_ERR;
 		goto cleanup;
 	}
@@ -98,6 +108,7 @@ static void
 recorder_close_file(struct recorder *rcd)
 {
 	if (rcd->out) {
+		sf_write_sync(rcd->out);
 		sf_close(rcd->out);
 		rcd->out = NULL;
 	}
@@ -118,13 +129,13 @@ recorder_switch_file(struct recorder *rcd)
 	 * state transitions. It's meant to be used
 	 * for switching to a new file without messing
 	 * with the recorder's state. */
-	if (recorder_state == RECORDER_TRANSITION)
+	if (recorder_get_state(rcd) == RECORDER_TRANSITION)
 		return RECORDER_AGAIN;
 
 	/* This doesn't make sense, in order to switch
 	 * to a new file a file should be already open
 	 * and active */
-	if (recorder_state != RECORDER_RUNNING)
+	if (recorder_get_state(rcd) != RECORDER_RUNNING)
 		return RECORDER_AGAIN;
 
 	new = recorder_open_new_file(rcd);
@@ -140,6 +151,7 @@ recorder_switch_file(struct recorder *rcd)
 	pthread_mutex_unlock(&consumer_process_mutex);
 
 	/* Close the previous one */
+	sf_write_sync(old);
 	sf_close(old);
 
 	/* Reset the timer */
@@ -224,9 +236,9 @@ recorder_timer_loop(void *arg)
 	while (timer_active) {
 		tv.tv_sec++;
 		if (!rcd->headless) {
-			if (recorder_state == RECORDER_RUNNING)
+			if (recorder_get_state(rcd) == RECORDER_RUNNING)
 				recorder_update_gui_timer_label(rcd);
-			if (recorder_state == RECORDER_DELAYED_STOP &&
+			if (recorder_get_state(rcd) == RECORDER_DELAYED_STOP &&
 			    rcd->secs_recorded >= RECORDER_STOP_DELAY_SECS)
 				break;
 		}
@@ -247,7 +259,7 @@ recorder_timer_loop(void *arg)
 
 	timer_active = 0;
 
-	if (recorder_state == RECORDER_DELAYED_STOP || ret < 0)
+	if (recorder_get_state(rcd) == RECORDER_DELAYED_STOP || ret < 0)
 		recorder_stop(rcd);
 
 	return NULL;
@@ -278,11 +290,9 @@ recorder_set_timer_state(struct recorder *rcd, int state)
 		if (!timer_active)
 			return 0;
 
-		ret = pthread_cancel(timer_tid);
-		if (ret != 0)
-			return RECORDER_TIMER_ERR;
-
 		timer_active = 0;
+
+		pthread_join(timer_tid, NULL);
 	}
 
 	return ret;
@@ -301,7 +311,9 @@ static int
 recorder_consume(struct recorder *rcd)
 {
 	int ret = 0;
+	sf_count_t frames_consumed = 0;
 	uint32_t frames_generated = 0;
+
 
 	pthread_mutex_lock(&consumer_process_mutex);
 	while (pthread_cond_wait
@@ -311,11 +323,14 @@ recorder_consume(struct recorder *rcd)
 	 * be closed or not exist yet. This also handles propper
 	 * exit of the consumer thread (without calling recorder_stop()
 	 * again), when switching states. */
-	if (recorder_state != RECORDER_RUNNING)
+	if (recorder_get_state(rcd) != RECORDER_RUNNING)
 		goto cleanup;
 
+	/* Use the previous buffer (current one may be filled by recorder_process) */
+	float *inbuff = (rcd->inbuff_idx == 0) ? rcd->inbuff_b : rcd->inbuff_a;
+
 	/* Resample audio to the requested output sampling rate */
-	rcd->resampler_data.data_in = rcd->inbuff_copy;
+	rcd->resampler_data.data_in = inbuff;
 	rcd->resampler_data.data_out = rcd->outbuff;
 	rcd->resampler_data.input_frames = rcd->num_frames;
 	rcd->resampler_data.output_frames = rcd->max_out_frames;
@@ -331,9 +346,11 @@ recorder_consume(struct recorder *rcd)
 	frames_generated = rcd->resampler_data.output_frames_gen;
 
 	/* Write data to file */
-	ret = sf_writef_float(rcd->out, rcd->outbuff, frames_generated);
-	if (ret != frames_generated) {
-		fprintf(stderr, "libsndfile failed writing to file %d !\n", ret);
+	frames_consumed = sf_writef_float(rcd->out, rcd->outbuff, frames_generated);
+	if (frames_consumed != frames_generated) {
+		fprintf(stderr, "libsndfile failed writing to file: wrote %li vs %i frames !\n",
+			frames_consumed, frames_generated);
+		fprintf(stderr, "libsndfile status: %s\n", sf_strerror(rcd->out));
 		ret = RECORDER_SNDFILE_ERR;
 	}
 
@@ -393,7 +410,7 @@ recorder_set_consumer_state(struct recorder *rcd, int state)
 
 		/* Don't try to stop the consumer while the recorder
 		 * is running */
-		if (recorder_state == RECORDER_RUNNING)
+		if (recorder_get_state(rcd) == RECORDER_RUNNING)
 			return RECORDER_AGAIN;
 
 		consumer_active = 0;
@@ -415,6 +432,55 @@ recorder_set_consumer_state(struct recorder *rcd, int state)
 * JACK CALLBACKS *
 \****************/
 
+static int
+reset_period_size(jack_nframes_t nframes, void *arg)
+{
+	int ret = 0;
+	struct recorder *rcd = (struct recorder *)arg;
+
+	pthread_mutex_lock(&consumer_process_mutex);
+	if (nframes != rcd->max_frames) {
+		int num_channels = (rcd->stereo) ? 2 : 1;
+		size_t new_inbuff_size = nframes * num_channels * sizeof(float);
+		if (new_inbuff_size > rcd->inbuff_size) {
+			float *new_a = realloc(rcd->inbuff_a, new_inbuff_size);
+			if (new_a == NULL) {
+				fprintf(stderr, "Could not allocate inbuff_a !\n");
+				ret = RECORDER_NOMEM;
+				goto cleanup;
+			}
+			rcd->inbuff_a = new_a;
+
+			float *new_b = realloc(rcd->inbuff_b, new_inbuff_size);
+			if (new_b == NULL) {
+				fprintf(stderr, "Could not allocate inbuf_b !\n");
+				ret = RECORDER_NOMEM;
+				goto cleanup;
+			}
+			rcd->inbuff_b = new_b;
+			rcd->inbuff_size = new_inbuff_size;
+		}
+
+		rcd->max_out_frames = (int)((rcd->resampler_ratio + 1.0) * (double)nframes);
+		size_t new_outbuff_size = rcd->max_out_frames * num_channels * sizeof(float);
+		if (new_outbuff_size > rcd->outbuff_size) {
+			float *new_outbuff = realloc(rcd->outbuff, new_outbuff_size);
+			if (new_outbuff == NULL) {
+				fprintf(stderr, "Could not allocate outbuff !\n");
+				ret = RECORDER_NOMEM;
+				goto cleanup;
+			}
+			rcd->outbuff = new_outbuff;
+			rcd->outbuff_size = new_outbuff_size;
+		}
+		rcd->max_frames = nframes;
+	}
+
+ cleanup:
+	pthread_mutex_unlock(&consumer_process_mutex);
+	return ret;
+}
+
 /**
  * Main process callback
  */
@@ -430,8 +496,10 @@ recorder_process(jack_nframes_t nframes, void *arg)
 	float peak_right = 0.0f;
 
 	/* Recorder not ready */
-	if (!recorder_state)
+	if (!recorder_get_state(rcd))
 		return 0;
+
+	float *inbuff = (rcd->inbuff_idx == 0) ? rcd->inbuff_a : rcd->inbuff_b;
 
 	if (rcd->stereo) {
 		/* Grab input */
@@ -443,8 +511,8 @@ recorder_process(jack_nframes_t nframes, void *arg)
 
 		/* Put frames on the buffer and update the peak levels */
 		for (i = 0, c = 0; i < nframes; i++) {
-			rcd->inbuff[c] = left_in[i];
-			rcd->inbuff[c + 1] = right_in[i];
+			inbuff[c] = left_in[i];
+			inbuff[c + 1] = right_in[i];
 			c += 2;
 			if (rcd->headless)
 				continue;
@@ -464,7 +532,7 @@ recorder_process(jack_nframes_t nframes, void *arg)
 			return -1;
 
 		for (i = 0; i < nframes; i++) {
-			rcd->inbuff[i] = left_in[i];
+			inbuff[i] = left_in[i];
 			if (rcd->headless)
 				continue;
 			peak_left =
@@ -475,13 +543,16 @@ recorder_process(jack_nframes_t nframes, void *arg)
 			recorder_update_gui_meters(rcd, peak_left, 0);
 	}
 
-	if (recorder_state != RECORDER_RUNNING)
+	if (recorder_get_state(rcd) != RECORDER_RUNNING)
 		return 0;
 
-	/* Wait for the previous write to complete, copy the current
-	 * buffer to inbuff_copy and trigger the next write */
+	/* Wait for the previous write to complete, swap input buffers,
+	 * and trigger the next write */
 	pthread_mutex_lock(&consumer_process_mutex);
-	memcpy(rcd->inbuff_copy, rcd->inbuff, rcd->inbuff_size);
+	if (rcd->inbuff_idx == 0)
+		rcd->inbuff_idx = 1;
+	else
+		rcd->inbuff_idx = 0;
 	rcd->num_frames = nframes;
 	pthread_cond_signal(&consumer_process_trigger);
 	pthread_mutex_unlock(&consumer_process_mutex);
@@ -498,18 +569,27 @@ recorder_shutdown(void *arg)
 {
 	struct recorder *rcd = (struct recorder *)arg;
 
-	recorder_state = RECORDER_NOT_INITIALIZED;
+	if (recorder_get_state(rcd) == RECORDER_NOT_INITIALIZED)
+		return;
+
+	fprintf(stderr, "Recorder shutdown\n");
+
+	jack_client_close(rcd->client);
+	recorder_set_state(rcd, RECORDER_NOT_INITIALIZED);
 	recorder_set_consumer_state(rcd, 0);
+	pthread_mutex_lock(&consumer_process_mutex);
+	pthread_cond_signal(&consumer_process_trigger);
+	pthread_mutex_unlock(&consumer_process_mutex);
 	recorder_set_timer_state(rcd, 0);
 
 	/* Close output file */
 	recorder_close_file(rcd);
 
 	/* Free buffers */
-	if (rcd->inbuff)
-		free(rcd->inbuff);
-	if (rcd->inbuff_copy)
-		free(rcd->inbuff_copy);
+	if (rcd->inbuff_a)
+		free(rcd->inbuff_a);
+	if (rcd->inbuff_b)
+		free(rcd->inbuff_b);
 	if (rcd->outbuff)
 		free(rcd->outbuff);
 
@@ -525,6 +605,15 @@ recorder_shutdown(void *arg)
 * ENTRY POINTS *
 \**************/
 
+bool
+recorder_is_running(struct recorder *rcd)
+{
+	if (recorder_get_state(rcd) == RECORDER_RUNNING)
+		return true;
+	else
+		return false;
+}
+
 /**
  * Stops an active recording
  */
@@ -535,11 +624,11 @@ recorder_stop(struct recorder *rcd)
 
 	/* Avoid re-closing an already closed file and don't try to
 	 * stop when switching states */
-	if (recorder_state == RECORDER_STOPPED
-	    || recorder_state == RECORDER_TRANSITION)
+	if (recorder_get_state(rcd) == RECORDER_STOPPED
+	    || recorder_get_state(rcd) == RECORDER_TRANSITION)
 		return RECORDER_AGAIN;
 
-	recorder_state = RECORDER_TRANSITION;
+	recorder_set_state(rcd, RECORDER_TRANSITION);
 
 	/* Make sure that at least RECORDER_STOP_DELAY_SECS
 	 * seconds have passed since the recording was started.
@@ -547,7 +636,7 @@ recorder_stop(struct recorder *rcd)
 	 * button. */
 	if (!rcd->headless) {
 		/* Prevent user from interacting with the button */
-		if (recorder_state != RECORDER_DELAYED_STOP)
+		if (recorder_get_state(rcd) != RECORDER_DELAYED_STOP)
 			recorder_update_gui_button_state(rcd,
 							 GUI_BUTTON_DISABLED);
 
@@ -557,7 +646,7 @@ recorder_stop(struct recorder *rcd)
 		 * and let the timer thread make the call when it
 		 * exits.*/
 		if (rcd->secs_recorded < RECORDER_STOP_DELAY_SECS) {
-			recorder_state = RECORDER_DELAYED_STOP;
+			recorder_set_state(rcd, RECORDER_DELAYED_STOP);
 			return RECORDER_AGAIN;
 		}
 	}
@@ -571,12 +660,19 @@ recorder_stop(struct recorder *rcd)
 
 	recorder_close_file(rcd);
 	recorder_set_timer_state(rcd, 0);
-	recorder_state = RECORDER_STOPPED;
+	recorder_set_state(rcd, RECORDER_STOPPED);
 
 	if (!rcd->headless)
 		recorder_update_gui_button_state(rcd, GUI_BUTTON_RAISED);
 
 	return ret;
+}
+
+void
+recorder_cleanup(struct recorder *rcd)
+{
+	recorder_shutdown((void *)rcd);
+	return;
 }
 
 /**
@@ -588,11 +684,11 @@ recorder_start(struct recorder *rcd)
 	int ret = 0;
 
 	/* Already running or switching states */
-	if (recorder_state == RECORDER_RUNNING
-	    || recorder_state == RECORDER_TRANSITION)
+	if (recorder_get_state(rcd) == RECORDER_RUNNING
+	    || recorder_get_state(rcd) == RECORDER_TRANSITION)
 		return RECORDER_AGAIN;
 
-	recorder_state = RECORDER_TRANSITION;
+	recorder_set_state(rcd, RECORDER_TRANSITION);
 
 	if (!rcd->headless)
 		recorder_update_gui_button_state(rcd, GUI_BUTTON_DISABLED);
@@ -618,12 +714,12 @@ recorder_start(struct recorder *rcd)
 		recorder_set_consumer_state(rcd, 0);
 		recorder_set_timer_state(rcd, 0);
 		recorder_close_file(rcd);
-		recorder_state = RECORDER_STOPPED;
+		recorder_set_state(rcd, RECORDER_STOPPED);
 		if (!rcd->headless)
 			recorder_update_gui_button_state(rcd,
 							 GUI_BUTTON_RAISED);
 	} else {
-		recorder_state = RECORDER_RUNNING;
+		recorder_set_state(rcd, RECORDER_RUNNING);
 		if (!rcd->headless)
 			recorder_update_gui_button_state(rcd,
 							 GUI_BUTTON_PRESSED);
@@ -642,11 +738,10 @@ recorder_initialize(struct recorder *rcd)
 	jack_status_t status = 0;
 	jack_options_t options = JackNoStartServer;
 	char *client_name = NULL;
-	int jack_samplerate = 0;
-	int maxframes = 0;
+	int max_frames = 0;
 	int num_channels = 0;
 
-	recorder_state = RECORDER_NOT_INITIALIZED;
+	recorder_set_state(rcd, RECORDER_NOT_INITIALIZED);
 
 	/* Open a client connection to the default JACK server */
 	rcd->client = jack_client_open("Audio Coffin", options, &status, NULL);
@@ -670,22 +765,20 @@ recorder_initialize(struct recorder *rcd)
 
 	/* Get maximum real time priority of jack threads */
 	rcd->rtprio = jack_client_max_real_time_priority(rcd->client);
-	if (rcd->rtprio < 0) {
-		ret = RECORDER_JACKD_ERR;
-		goto cleanup;
-	}
-
+	if (rcd->rtprio < 0)
+		fprintf(stderr, "Failed to set max rt priority for jack client\n");
 
 	/* Register callbacks on JACK */
 	jack_set_process_callback(rcd->client, recorder_process, rcd);
 	jack_on_shutdown(rcd->client, recorder_shutdown, rcd);
-
+	jack_set_buffer_size_callback(rcd->client, reset_period_size, rcd);
 
 	/* Register ports */
 	rcd->inL = jack_port_register(rcd->client, "AudioL",
 				      JACK_DEFAULT_AUDIO_TYPE,
 				      JackPortIsInput, 0);
 	if (rcd->inL == NULL) {
+		fprintf(stderr, "Could not register AudioL port with Jack\n");
 		ret = RECORDER_JACKD_ERR;
 		goto cleanup;
 	}
@@ -695,6 +788,7 @@ recorder_initialize(struct recorder *rcd)
 					      JACK_DEFAULT_AUDIO_TYPE,
 					      JackPortIsInput, 0);
 		if (rcd->inR == NULL) {
+			fprintf(stderr, "Could not register AudioR port with Jack\n");
 			ret = RECORDER_JACKD_ERR;
 			goto cleanup;
 		}
@@ -703,66 +797,56 @@ recorder_initialize(struct recorder *rcd)
 
 	/* Initialize output format */
 	num_channels = (rcd->stereo) ? 2 : 1;
-	rcd->info.samplerate = rcd->sample_rate;
+	rcd->info.samplerate = rcd->out_sample_rate;
 	rcd->info.channels = num_channels;
 	switch (rcd->format) {
 	case RECORDER_FORMAT_FLAC:
-		rcd->info.format = SF_FORMAT_FLAC | SF_FORMAT_PCM_24;
+		rcd->info.format = SF_FORMAT_FLAC;
+		if (rcd->hqflac)
+			rcd->info.format |= SF_FORMAT_PCM_24;
+		else
+			rcd->info.format |= SF_FORMAT_PCM_16;
 		break;
 	case RECORDER_FORMAT_OGG_VORBIS:
 		rcd->info.format = SF_FORMAT_OGG | SF_FORMAT_VORBIS;
 		break;
 	default:
 		ret = RECORDER_INVALID;
+		fprintf(stderr, "Invalid input format: %i\n", rcd->format);
 		goto cleanup;
 	}
 
 	if (!sf_format_check(&rcd->info)) {
-		fprintf(stderr, "output file format error\n");
+		fprintf(stderr, "Output file format error\n");
 		ret = RECORDER_SNDFILE_ERR;
 		goto cleanup;
 	}
 
 
 	/* Initialize resampler */
-	jack_samplerate = jack_get_sample_rate(rcd->client);
-	rcd->resampler_ratio =
-	    (double)rcd->sample_rate / (double)jack_samplerate;
-	rcd->resampler_state = src_new(SRC_SINC_FASTEST, num_channels, &ret);
+	rcd->jack_sample_rate = jack_get_sample_rate(rcd->client);
+	rcd->resampler_ratio = (double)rcd->out_sample_rate / (double)rcd->jack_sample_rate;
+	rcd->resampler_state = src_new(rcd->hqresampler ? SRC_SINC_BEST_QUALITY : SRC_SINC_FASTEST,
+				       num_channels, &ret);
 	if (ret != 0) {
-		printf("resampler: %s\n", src_strerror(ret));
-		return -1;
+		fprintf(stderr, "Resampler init faled: %s\n", src_strerror(ret));
+		ret = RECORDER_RESAMPLER_ERR;
+		goto cleanup;
 	}
 
 
 	/* Initialize buffers */
-	maxframes = jack_get_buffer_size(rcd->client);
-	rcd->inbuff_size = num_channels * maxframes * sizeof(float);
-	rcd->inbuff = malloc(rcd->inbuff_size);
-	if (rcd->inbuff == NULL) {
-		ret = RECORDER_NOMEM;
+	max_frames = jack_get_buffer_size(rcd->client);
+	ret = reset_period_size(max_frames, rcd);
+	if (ret != 0)
 		goto cleanup;
-	}
-	rcd->inbuff_copy = malloc(rcd->inbuff_size);
-	if (rcd->inbuff_copy == NULL) {
-		ret = RECORDER_NOMEM;
-		goto cleanup;
-	}
-	rcd->max_out_frames =
-	    ((int)(((double)rcd->sample_rate / (double)jack_samplerate) + 1.0))
-	    * num_channels * maxframes;
-	rcd->outbuff_size = rcd->max_out_frames * sizeof(float);
-	rcd->outbuff = malloc(rcd->outbuff_size);
-	if (rcd->outbuff == NULL) {
-		ret = RECORDER_NOMEM;
-		goto cleanup;
-	}
 
 
 	/* Tell the JACK server that we are ready to roll.  Our
 	 * process() callback will start running now. */
 	ret = jack_activate(rcd->client);
 	if (ret != 0) {
+		fprintf(stderr, "Could not activate jack client\n");
 		ret = RECORDER_JACKD_ERR;
 		goto cleanup;
 	}
@@ -773,20 +857,12 @@ recorder_initialize(struct recorder *rcd)
 	if (rcd->opmode == RECORDER_LOGGER)
 		recorder_start(rcd);
 	else
-		recorder_state = RECORDER_STOPPED;
+		recorder_set_state(rcd, RECORDER_STOPPED);
 
  cleanup:
-	if (ret < 0) {
-		jack_client_close(rcd->client);
-		recorder_shutdown((void *)rcd);
-	}
+	if (ret < 0)
+		recorder_cleanup(rcd);
 
 	return ret;
 }
 
-void
-recorder_cleanup(struct recorder *rcd)
-{
-	recorder_shutdown((void *)rcd);
-	return;
-}

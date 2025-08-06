@@ -19,9 +19,22 @@
  */
 #include "acoffin.h"
 #include <math.h>		/* For log10 and fabs */
+#include <glib-unix.h>		/* For g_unix_signal_add */
 
 volatile sig_atomic_t button_state = GUI_BUTTON_RAISED;
 volatile sig_atomic_t gui_state = GUI_NOT_INITIALIZED;
+
+/****************\
+* SIGNAL HANDLER *
+\****************/
+
+static gboolean
+gui_sighandler(gpointer data)
+{
+	struct recorder *rcd = (struct recorder *)data;
+	recorder_cleanup(rcd);
+	return G_SOURCE_REMOVE;
+}
 
 /**********************\
 * TIMER LABEL HANDLING *
@@ -80,7 +93,7 @@ gui_button_action(GtkWidget * widget, gpointer data)
 	else
 		recorder_stop(rcd);
 
-	if (recorder_state == RECORDER_RUNNING)
+	if (recorder_is_running(rcd))
 		gtk_image_set_from_pixbuf(GTK_IMAGE(rcd->button_image),
 					  rcd->active_pbuf);
 	else
@@ -166,6 +179,7 @@ gui_update_meters(gpointer data)
 	/* Amplitude to db + iec scaling */
 	db_left = 20.0f * log10(rcd->left_amp);
 	db_left = iec_scale(db_left) / 100;
+	gtk_level_bar_set_value(GTK_LEVEL_BAR(rcd->level_left), db_left);
 
 	if (rcd->stereo) {
 		db_right = 20.0f * log10(rcd->right_amp);
@@ -173,8 +187,6 @@ gui_update_meters(gpointer data)
 		gtk_level_bar_set_value(GTK_LEVEL_BAR(rcd->level_right),
 					db_right);
 	}
-
-	gtk_level_bar_set_value(GTK_LEVEL_BAR(rcd->level_left), db_left);
 
 	/* Always return false or it'll loop */
 	return FALSE;
@@ -330,12 +342,12 @@ gui_initialize(int argc, char *argv[], struct recorder *rcd)
 						  GTK_STYLE_PROVIDER(provider),
 						  GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
-	gtk_css_provider_load_from_data(GTK_CSS_PROVIDER(provider), "GtkLabel {\n\
-						font: Andale Mono;\
-						font-size: 20px;\
-						color: #357EC7;\
-					}\n", -1,
-					NULL);
+	gtk_css_provider_load_from_data(GTK_CSS_PROVIDER(provider),
+					"GtkLabel {\n"
+					"	font-family: 'Andale Mono', monospace;\n"
+					"	font-size: 20px;\n"
+					"	color: #357EC7;\n"
+					"}\n", -1, NULL);
 	g_object_unref(provider);
 	rcd->timer = timer;
 
@@ -356,12 +368,15 @@ gui_initialize(int argc, char *argv[], struct recorder *rcd)
 	/* Mark GUI as ready */
 	gui_state = GUI_READY;
 
+	/* Attach signal handler */
+	g_unix_signal_add(SIGINT, gui_sighandler, rcd);
+	g_unix_signal_add(SIGTERM, gui_sighandler, rcd);
 
 	/* Start the gtk main loop */
 	gtk_main();
 
  cleanup:
-	return ret - RECODER_ERR_MAX;
+	return ret + RECODER_ERR_MAX;
 }
 
 /**

@@ -41,7 +41,9 @@ usage(char *name)
 	       "\t-r   <int>\tSet output sample rate, default value is 48000\n"
 	       "\t-f   <int>\tSet output format, valid values are 1 for FLAC (default) and 2 for Ogg/Vorbis\n"
 	       "\t-q   <double>\tSet encoding quality for the vorbis/FLAC encoder, valid values are 0.0 - 1.0 (default: 0.5)\n"
-	       "\t-c   <double>\tSet compression level for the vorbis/FLAC encoder, valid values are 0.0 - 1.0 (default: 0.75)\n");
+	       "\t-c   <double>\tSet compression level for the vorbis/FLAC encoder, valid values are 0.0 - 1.0 (default: 0.75)\n"
+	       "\t-b   <boolean>\tEnable 24bit input for FLAC encoder\n"
+	       "\t-l   <boolean>\tEnable HQ resampler\n");
 }
 
 int
@@ -63,13 +65,13 @@ main(int argc, char *argv[])
 	rcd.logrotate_interval_secs = 60 * 60;
 	rcd.stereo = 1;
 	rcd.headless = 0;
-	rcd.sample_rate = 48000;
+	rcd.out_sample_rate = 48000;
 	rcd.format = RECORDER_FORMAT_FLAC;
 	rcd.quality = 0.5;
 	rcd.comp_level = 0.75;
 
 	/* Grab user arguments */
-	while ((opt = getopt(argc, argv, "p:m:t:s:g:r:f:q:c:")) != -1)
+	while ((opt = getopt(argc, argv, "p:m:t:s:g:r:f:q:c:b:l:")) != -1)
 		switch (opt) {
 		case 'h':
 			usage(argv[0]);
@@ -141,7 +143,7 @@ main(int argc, char *argv[])
 				ret = -EINVAL;
 				goto cleanup;
 			} else
-				rcd.sample_rate = ret;
+				rcd.out_sample_rate = ret;
 			break;
 		case 'f':
 			ret = atoi(optarg);
@@ -176,6 +178,28 @@ main(int argc, char *argv[])
 				goto cleanup;
 			} else
 				rcd.comp_level = tmp;
+			break;
+		case 'b':
+			ret = atoi(optarg);
+			if (ret > 1 || ret < 0) {
+				fprintf(stderr,
+					"Invalid value for 24bit FLAC operation: %s\n",
+					optarg);
+				ret = -EINVAL;
+				goto cleanup;
+			} else
+				rcd.hqflac = ret ? true : false;
+			break;
+		case 'l':
+			ret = atoi(optarg);
+			if (ret > 1 || ret < 0) {
+				fprintf(stderr,
+					"Invalid value for HQ resampler operation: %s\n",
+					optarg);
+				ret = -EINVAL;
+				goto cleanup;
+			} else
+				rcd.hqresampler = ret ? true : false;
 			break;
 		default:	/* '?' */
 			usage(argv[0]);
@@ -241,7 +265,21 @@ main(int argc, char *argv[])
 	if (!rcd.headless)
 		ret = gui_initialize(argc, argv, &rcd);
 	else {
-		/* Logger starts on recorder_initialize
+		sigset_t sigset;
+		int sig;
+
+		/* Block SIGINT and SIGTERM in all threads */
+		sigemptyset(&sigset);
+		sigaddset(&sigset, SIGINT);
+		sigaddset(&sigset, SIGTERM);
+		pthread_sigmask(SIG_BLOCK, &sigset, NULL);
+
+		/* Since there is no GUI, there is no interaction
+		 * with the user to trigger the recording, so we
+		 * need to trigger it manually here.
+		 *
+		 * Note that in logger mode the recording is
+		 * always triggered on recorder_initialize
 		 * with or without gui */
 		if(rcd.opmode != RECORDER_LOGGER) {
 			ret = recorder_start(&rcd);
@@ -249,14 +287,18 @@ main(int argc, char *argv[])
 				goto cleanup;
 		}
 
-		while (recorder_state)
-			sleep(1);
-	}
+		/* Loop while waiting for SIGINT/TERM to exit */
+		while (recorder_is_running(&rcd))
+			if (sigwait(&sigset, &sig) == 0) {
+				if (recorder_is_running(&rcd))
+					recorder_stop(&rcd);
+				break;
+			}
+		}
 
  cleanup:
-	if (recorder_state)
-		recorder_cleanup(&rcd);
-	if(resolved_path)
+	recorder_cleanup(&rcd);
+	if (resolved_path)
 		free(resolved_path);
 	return ret;
 }

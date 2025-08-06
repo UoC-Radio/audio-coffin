@@ -18,6 +18,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stdint.h>		/* For typed ints */
+#include <stdbool.h>		/* For bool */
 #include <gtk/gtk.h>		/* For GTK types */
 #include <jack/jack.h>		/* For jack-related types */
 #include <sndfile.h>		/* For output handling */
@@ -25,6 +26,7 @@
 #include <signal.h>		/* For sig_atomic_t */
 
 struct recorder {
+	_Atomic int state;
 	uint8_t opmode;
 	/* GUI stuff */
 	int headless;
@@ -42,9 +44,13 @@ struct recorder {
 	jack_client_t *client;
 	/* Input Info */
 	int stereo;
-	/* Input buffer */
-	float *inbuff;
+	jack_nframes_t max_frames;
+	jack_nframes_t jack_sample_rate;
+	/* Input buffers */
+	float *inbuff_a;
+	float *inbuff_b;
 	size_t inbuff_size;
+	int inbuff_idx;
 	/* Amplitude values */
 	float left_amp;
 	float right_amp;
@@ -55,7 +61,9 @@ struct recorder {
 	int format;
 	double quality;
 	double comp_level;
-	uint32_t sample_rate;
+	uint32_t out_sample_rate;
+	bool hqflac;
+	bool hqresampler;
 	/* Output buffer */
 	float *outbuff;
 	size_t outbuff_size;
@@ -63,9 +71,8 @@ struct recorder {
 	SRC_STATE *resampler_state;
 	SRC_DATA resampler_data;
 	double resampler_ratio;
-	int max_out_frames;
+	jack_nframes_t max_out_frames;
 	/* Consumer */
-	float *inbuff_copy;
 	int num_frames;
 	int rtprio;
 	/* Timer */
@@ -73,8 +80,6 @@ struct recorder {
 	uint32_t secs_recorded;
 	uint32_t rotations;
 };
-
-extern volatile sig_atomic_t recorder_state;
 
 enum recorder_states {
 	RECORDER_NOT_INITIALIZED = 0,
@@ -135,3 +140,4 @@ int recorder_start(struct recorder *rcd);
 int recorder_stop(struct recorder *rcd);
 int recorder_initialize(struct recorder *rcd);
 void recorder_cleanup(struct recorder *rcd);
+bool recorder_is_running(struct recorder *rcd);
